@@ -1,0 +1,5 @@
+keys/**
+!keys/.keep
+cloud-init*.yaml
+*.swp
+
