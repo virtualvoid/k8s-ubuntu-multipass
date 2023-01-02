@@ -196,6 +196,24 @@ function update_hosts_on_worker() {
 	update_hosts_on_node $WORKER_NODE$1
 }
 
+function install_dependencies_on_master() {
+	install_dependencies_on_node $MASTER_NODE
+}
+
+function install_dependencies_on_worker() {
+	install_dependencies_on_node $WORKER_NODE$1
+}
+
+function install_dependencies_on_node() {
+	echo -e "${COLOR_GREEN}- Installing dependencies on ${1}...${COLOR_RESET}"
+	# Basic software
+	exec_on_node $1 "sudo apt install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates"
+	# containerd
+	exec_on_node $1 "sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --no-tty --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg"
+	exec_on_node $1 "sudo add-apt-repository --yes \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\""
+	exec_on_node $1 "sudo apt update && sudo apt install -y containerd.io"
+}
+
 function cleanup_all() {
 	echo -e "${COLOR_ORANGE}- Cleanup, this might take a while...${COLOR_RESET}"
 	multipass stop --all
@@ -231,12 +249,20 @@ case $1 in
 		update_hosts_on_master
 		update_hosts_on_worker 1
 		update_hosts_on_worker 2
+		install_dependencies_on_master
+		install_dependencies_on_worker 1
+		install_dependencies_on_worker 2
                 ;;
 	--update-hosts)
 		generate_hosts
 		update_hosts_on_master
 		update_hosts_on_worker 1
 		update_hosts_on_worker 2
+		;;
+	--node-dependencies)
+		install_dependencies_on_master
+		install_dependencies_on_worker 1
+		install_dependencies_on_worker 2
 		;;
         --cleanup)
                 is_running_as_root
@@ -248,3 +274,7 @@ case $1 in
 		echo ""
                 ;;
 esac
+
+echo -e "${COLOR_ORANGE}Done...${COLOR_RESET}\n\n"
+
+
