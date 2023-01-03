@@ -204,14 +204,78 @@ function install_dependencies_on_worker() {
 	install_dependencies_on_node $WORKER_NODE$1
 }
 
+function setup_master() {
+	echo -e "${COLOR_GREEN}- Setting up the master ${MASTER_NODE} node...${COLOR_RESET}"
+	exec_on_node $MASTER_NODE "sudo kubeadm init --control-plane-endpoint=${MASTER_NODE}"
+	exec_on_node $MASTER_NODE "mkdir -p ~/.kube"
+	exec_on_node $MASTER_NODE "sudo cp -i /etc/kubernetes/admin.conf ~/.kube/config"
+	exec_on_node $MASTER_NODE "sudo chown ${USER_NAME}:${USER_NAME} ~/.kube/config"
+}
+
+function copy_kubeconfig_from_master() {
+	echo -e "${COLOR_GREEN}- Copy the .kube/config file...${COLOR_RESET}"
+	exec_on_node $MASTER_NODE "cp ~/.kube/config /home/ubuntu/kubeconfig"
+	mkdir -p ~/.kube
+	multipass transfer $MASTER_NODE:/home/ubuntu/kubeconfig ~/.kube/config
+
+	install_kubectl_locally
+}
+
+function install_kubectl_locally() {
+	echo -e "${COLOR_GREEN}- Installing kubectl locally...${COLOR_RESET}"
+	curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+	sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+}
+
+function get_worker_join_command() {
+	echo -e "${COLOR_GREEN}- Trying to obtain kube join command...${COLOR_RESET}"
+
+#sha ca hash
+#openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt \
+#    | openssl rsa -pubin -outform der 2>/dev/null \
+#    | openssl dgst -sha256 -hex \
+#    | sed 's/^.* //'
+}
+
+function setup_worker() {
+	echo -e "${COLOR_GREEN}- Setting up the worker ${WORKER_NODE}${1} node...${COLOR_RESET}"
+}
+
 function install_dependencies_on_node() {
+	# Preliminary settings
+	echo -e "${COLOR_GREEN}- Working on some settings...${COLOR_RESET}"
+	exec_on_node $1 "sudo swapoff -a"
+	exec_on_node $1 "sudo sed -e '/swap.img/ s/^/#/' /etc/fstab"
+
+	exec_on_node $1 "echo -e \"overlay\nbr_netfilter\n\" | sudo tee /etc/modules-load.d/containerd.conf"
+	exec_on_node $1 "sudo modprobe overlay"
+	exec_on_node $1 "sudo modprobe br_netfilter"
+	LN1="net.bridge.bridge-nf-call-ip6tables = 1"
+	LN2="net.bridge.bridge-nf-call-iptables = 1"
+	LN3="net.ipv4.ip_forward = 1"
+	exec_on_node $1 "echo -e \"${LN1}\n${LN2}\n${LN3}\" | sudo tee /etc/sysctl.d/kubernetes.conf"
+	exec_on_node $1 "sudo sysctl --system"
+
+	# Dependencies itself
 	echo -e "${COLOR_GREEN}- Installing dependencies on ${1}...${COLOR_RESET}"
+
 	# Basic software
 	exec_on_node $1 "sudo apt install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates"
+
 	# containerd
 	exec_on_node $1 "sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --no-tty --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg"
 	exec_on_node $1 "sudo add-apt-repository --yes \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\""
 	exec_on_node $1 "sudo apt update && sudo apt install -y containerd.io"
+
+	exec_on_node $1 "containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1"
+	exec_on_node $1 "sudo sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml"
+	exec_on_node $1 "sudo systemctl restart containerd"
+	exec_on_node $1 "sudo systemctl enable containerd"
+
+	# Kubernetes
+	exec_on_node $1 "curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -"
+	exec_on_node $1 "sudo apt-add-repository --yes \"deb http://apt.kubernetes.io/ kubernetes-xenial main\""
+	exec_on_node $1 "sudo apt update && sudo apt install -y kubelet kubeadm kubectl"
 }
 
 function cleanup_all() {
@@ -252,6 +316,11 @@ case $1 in
 		install_dependencies_on_master
 		install_dependencies_on_worker 1
 		install_dependencies_on_worker 2
+		setup_master
+		copy_kubeconfig_from_master
+		get_worker_join_command
+		setup_worker 1
+		setup_worker 2
                 ;;
 	--update-hosts)
 		generate_hosts
@@ -263,6 +332,13 @@ case $1 in
 		install_dependencies_on_master
 		install_dependencies_on_worker 1
 		install_dependencies_on_worker 2
+		;;
+	--node-setup)
+		setup_master
+		copy_kubeconfig_from_master
+		get_worker_join_command
+		setup_worker 1
+		setup_worker 2
 		;;
         --cleanup)
                 is_running_as_root
